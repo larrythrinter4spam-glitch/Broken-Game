@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Serpent Ritual Arena</title>
+  <style>
+    html, body { margin:0; padding:0; overflow:hidden; height:100%; background:#000; }
+    #gameCanvas { display:block; }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      // --- Constants ---
+      const WORLD_SIZE = 12000, SEGMENT_LENGTH = 14, BASE_SPEED = 2.5, BOOST_SPEED = 6;
+      const BOOST_DOT_COST = 5, BOOST_SEGMENT_COST = 2, BOOST_DOT_INTERVAL = 500, BOOST_DOT_INTERVAL_FAST = 100;
+      const BOOST_SEGMENT_INTERVAL = 500, BORDER_WIDTH = 10, STARTING_SIZE = 10;
+      const AI_COUNT = 20, SUPER_GIANT_COUNT = 1;
+      const AI_COLORS = ['#f55','#5f5','#55f','#ff5','#f5f','#5ff','#fff','#fa0','#0af','#af0','#0fa'];
+
+      // --- State ---
+      let snake = [], dots = [], score = 0, highscore = 0, alive = true, boosting = false;
+      let lastDotDrain = 0, lastSegmentDrain = 0, mouse = {x:0, y:0}, thicknessMultiplier = 1, myColor = '#fff';
+      let aiSnakes = [];
+
+      // --- Canvas Setup ---
+      const canvas = document.getElementById('gameCanvas');
+      const ctx = canvas.getContext('2d');
+      let width = window.innerWidth, height = window.innerHeight;
+      canvas.width = width; canvas.height = height;
+      window.onresize = () => {
+        width = window.innerWidth; height = window.innerHeight;
+        canvas.width = width; canvas.height = height;
+      };
+
+      // --- Input ---
+      document.onmousemove = e => { mouse.x = e.clientX; mouse.y = e.clientY; };
+      document.onmousedown = e => { if(e.button===0 && alive && snake.length>STARTING_SIZE){ boosting=true; lastDotDrain=performance.now(); lastSegmentDrain=performance.now(); } };
+      document.onmouseup = () => boosting=false;
+      document.onclick = () => { if(!alive) initSnake(); };
+
+      // --- Utility Functions ---
+      function randomPosition() {
+        const margin = 400;
+        return {
+          x: Math.random()*(WORLD_SIZE-2*margin)+margin,
+          y: Math.random()*(WORLD_SIZE-2*margin)+margin
+        };
+      }
+      function initAISnake(idx, superGiant=false) {
+        const pos = randomPosition();
+        const size = superGiant ? Math.floor(Math.random()*30)+60 : Math.floor(Math.random()*20)+8;
+        return {
+          color: AI_COLORS[idx % AI_COLORS.length],
+          segments: Array.from({length:size},()=>({x:pos.x,y:pos.y,angle:0})),
+          alive: true,
+          targetAngle: Math.random()*2*Math.PI,
+          speed: BASE_SPEED*0.95 + Math.random()*0.5,
+          thickness: superGiant ? 2.5 + Math.random()*2 : 1 + Math.random()*1.2,
+          boosting: false,
+          aiTimer: 0,
+          superGiant,
+          id: idx,
+          wanderAngle: Math.random()*2*Math.PI,
+          wanderTimer: 0
+        };
+      }
+      function respawnAISnake(ai) {
+        const idx = Math.floor(Math.random()*AI_COLORS.length);
+        Object.assign(ai, initAISnake(idx, ai.superGiant));
+      }
+      function spawnDot() {
+        dots.push({
+          x: Math.random()*(WORLD_SIZE-2*BORDER_WIDTH)+BORDER_WIDTH,
+          y: Math.random()*(WORLD_SIZE-2*BORDER_WIDTH)+BORDER_WIDTH,
+          baseRadius: Math.random()*6+4,
+          pulse: Math.random()*0.5+0.5,
+          color: '#fff',
+          phase: Math.random()*Math.PI*2,
+          eaten: false
+        });
+      }
+      function initSnake() {
+        const startX = WORLD_SIZE/2, startY = WORLD_SIZE/2;
+        snake = Array.from({length:STARTING_SIZE},()=>({x:startX,y:startY,angle:0}));
+        dots = []; alive = true; score = 0; thicknessMultiplier = 1;
+        for(let i=0;i<1000;i++) spawnDot();
+        aiSnakes = [];
+        for(let i=0;i<SUPER_GIANT_COUNT;i++) aiSnakes.push(initAISnake(i, true));
+        for(let i=SUPER_GIANT_COUNT;i<AI_COUNT;i++) aiSnakes.push(initAISnake(i, false));
+      }
+
+      function updateSnake(time) {
+        if (!alive) return;
+        const head = snake[0], speed = boosting ? BOOST_SPEED : BASE_SPEED;
+        // Move head toward mouse
+        const dx = mouse.x + (snake[0].x - width / 2) - head.x;
+        const dy = mouse.y + (snake[0].y - height / 2) - head.y;
+        const angle = Math.atan2(dy, dx);
+        head.x += Math.cos(angle) * speed;
+        head.y += Math.sin(angle) * speed;
+        head.angle = angle;
+        // Death on border
+        if (head.x < BORDER_WIDTH || head.x > WORLD_SIZE - BORDER_WIDTH || head.y < BORDER_WIDTH || head.y > WORLD_SIZE - BORDER_WIDTH) {
+          alive = false;
+          for (const seg of snake) dots.push({...seg, baseRadius: Math.random()*6+4, pulse: Math.random()*0.5+0.5, color:'#fff', phase:Math.random()*Math.PI*2, eaten:false});
+          if (score > highscore) highscore = score;
+        }
+        // Death on collision with AI
+        for (const ai of aiSnakes) {
+          if (!ai.alive) continue;
+          for (const seg of ai.segments) {
+            const dx = head.x - seg.x, dy = head.y - seg.y, dist = Math.hypot(dx, dy);
+            if (dist < SEGMENT_LENGTH * thicknessMultiplier / 2) {
+              alive = false;
+              for (const seg2 of snake) dots.push({...seg2, baseRadius: Math.random()*6+4, pulse: Math.random()*0.5+0.5, color:'#fff', phase:Math.random()*Math.PI*2, eaten:false});
+              if (score > highscore) highscore = score;
+              break;
+            }
+          }
+        }
+        // Move segments
+        for (let i = 1; i < snake.length; i++) {
+          const prev = snake[i - 1], curr = snake[i], dx2 = prev.x - curr.x, dy2 = prev.y - curr.y, ang2 = Math.atan2(dy2, dx2);
+          curr.x = prev.x - Math.cos(ang2) * SEGMENT_LENGTH * thicknessMultiplier;
+          curr.y = prev.y - Math.sin(ang2) * SEGMENT_LENGTH * thicknessMultiplier;
+          curr.angle = ang2;
+        }
+        // Boost cost
+        const dotInt = boosting ? BOOST_DOT_INTERVAL_FAST : BOOST_DOT_INTERVAL;
+        if (boosting && time - lastDotDrain > dotInt) {
+          score = Math.max(0, score - BOOST_DOT_COST); lastDotDrain = time;
+          const tail = snake[snake.length - 1];
+          dots.push({x: tail.x, y: tail.y, baseRadius: Math.random()*4+3, pulse: Math.random()*0.5+0.5, color:'#fff', phase:Math.random()*Math.PI*2, eaten:false});
+        }
+        if (boosting && time - lastSegmentDrain > BOOST_SEGMENT_INTERVAL && snake.length > STARTING_SIZE + BOOST_SEGMENT_COST) {
+          for (let i = 0; i < BOOST_SEGMENT_COST; i++) if (snake.length > STARTING_SIZE + BOOST_SEGMENT_COST) snake.pop();
+          lastSegmentDrain = time;
+        }
+      }
+
+      function updateAISnakes(time) {
+        for (const ai of aiSnakes) {
+          if (!ai.alive) { respawnAISnake(ai); continue; }
+          const head = ai.segments[0];
+          // Find nearest dot
+          let nearestDot = null, nearestDotDist = Infinity;
+          for (const dot of dots) {
+            if (dot.eaten) continue;
+            const dx = dot.x - head.x, dy = dot.y - head.y, dist = Math.hypot(dx, dy);
+            if (dist < nearestDotDist) { nearestDotDist = dist; nearestDot = dot; }
+          }
+          // If dot found, chase it; else, wander
+          let target;
+          if (nearestDot) {
+            target = { x: nearestDot.x, y: nearestDot.y };
+            ai.wanderTimer = 0; // reset wander timer
+          } else {
+            // Wander: every 2 seconds, pick a new random direction
+            ai.wanderTimer = (ai.wanderTimer || 0) + 1;
+            if (!ai.wanderAngle || ai.wanderTimer > 120) {
+              ai.wanderAngle = Math.random() * 2 * Math.PI;
+              ai.wanderTimer = 0;
+            }
+            target = {
+              x: head.x + Math.cos(ai.wanderAngle) * 200,
+              y: head.y + Math.sin(ai.wanderAngle) * 200
+            };
+          }
+          // Border avoidance
+          if (head.x < BORDER_WIDTH + 100) target.x = head.x + 200;
+          if (head.x > WORLD_SIZE - BORDER_WIDTH - 100) target.x = head.x - 200;
+          if (head.y < BORDER_WIDTH + 100) target.y = head.y + 200;
+          if (head.y > WORLD_SIZE - BORDER_WIDTH - 100) target.y = head.y - 200;
+          // Move toward target
+          const dx = target.x - head.x, dy = target.y - head.y;
+          ai.targetAngle = Math.atan2(dy, dx);
+          const speed = ai.boosting ? BOOST_SPEED : ai.speed;
+          head.x += Math.cos(ai.targetAngle) * speed;
+          head.y += Math.sin(ai.targetAngle) * speed;
+          head.angle = ai.targetAngle;
+          // Death on border
+          if (head.x < BORDER_WIDTH || head.x > WORLD_SIZE - BORDER_WIDTH || head.y < BORDER_WIDTH || head.y > WORLD_SIZE - BORDER_WIDTH) {
+            ai.alive = false;
+            for (const seg of ai.segments) dots.push({...seg, baseRadius: Math.random()*6+4, pulse: Math.random()*0.5+0.5, color:ai.color, phase:Math.random()*Math.PI*2, eaten:false});
+            continue;
+          }
+          // Death on collision with player
+          for (const seg of snake) {
+            const dx = head.x - seg.x, dy = head.y - seg.y, dist = Math.hypot(dx, dy);
+            if (dist < SEGMENT_LENGTH * ai.thickness / 2) {
+              ai.alive = false;
+              for (const seg2 of ai.segments) dots.push({...seg2, baseRadius: Math.random()*6+4, pulse: Math.random()*0.5+0.5, color:ai.color, phase:Math.random()*Math.PI*2, eaten:false});
+              break;
+            }
+          }
+          // Death on collision with other AI
+          for (const other of aiSnakes) {
+            if (other === ai || !other.alive) continue;
+            for (const seg of other.segments) {
+              const dx = head.x - seg.x, dy = head.y - seg.y, dist = Math.hypot(dx, dy);
+              if (dist < SEGMENT_LENGTH * ai.thickness / 2) {
+                ai.alive = false;
+                for (const seg2 of ai.segments) dots.push({...seg2, baseRadius: Math.random()*6+4, pulse: Math.random()*0.5+0.5, color:ai.color, phase:Math.random()*Math.PI*2, eaten:false});
+                break;
+              }
+            }
+          }
+          // Move segments
+          for (let i = 1; i < ai.segments.length; i++) {
+            const prev = ai.segments[i - 1], curr = ai.segments[i], dx2 = prev.x - curr.x, dy2 = prev.y - curr.y, ang2 = Math.atan2(dy2, dx2);
+            curr.x = prev.x - Math.cos(ang2) * SEGMENT_LENGTH * ai.thickness;
+            curr.y = prev.y - Math.sin(ang2) * SEGMENT_LENGTH * ai.thickness;
+            curr.angle = ang2;
+          }
+        }
+      }
+
+      function checkDotCollision() {
+        const head = snake[0];
+        for (const dot of dots) {
+          if (dot.eaten) continue;
+          const dx = head.x - dot.x, dy = head.y - dot.y, dist = Math.hypot(dx, dy);
+          if (dist < dot.baseRadius + SEGMENT_LENGTH * thicknessMultiplier / 2) {
+            dot.eaten = true; score += Math.floor(dot.baseRadius * 2);
+            snake.push({...snake[snake.length-1]});
+            thicknessMultiplier = 1 + Math.min(2, snake.length / 100);
+          }
+        }
+      }
+
+      function drawSnakeRibbon(segments, color, boosting, thickness) {
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = SEGMENT_LENGTH * thickness;
+        ctx.beginPath();
+        ctx.moveTo(segments[0].x, segments[0].y);
+        for (let i = 1; i < segments.length; i++) {
+          // Smooth curve for awesome snake look!
+          const prev = segments[i - 1], curr = segments[i];
+          ctx.quadraticCurveTo(prev.x, prev.y, curr.x, curr.y);
+        }
+        ctx.shadowColor = boosting ? '#fff' : color;
+        ctx.shadowBlur = boosting ? 24 : 12;
+        ctx.stroke();
+        ctx.restore();
+        // Draw snake head with glow
+        const head = segments[0];
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(head.x, head.y, SEGMENT_LENGTH * thickness * 0.7, 0, 2 * Math.PI);
+        ctx.fillStyle = boosting ? "#fff" : color;
+        ctx.shadowColor = boosting ? "#fff" : color;
+        ctx.shadowBlur = boosting ? 32 : 16;
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawDots(time) {
+        for (const dot of dots) {
+          if (dot.eaten) continue;
+          const pulse = Math.sin(time / 500 + dot.phase) * 0.5 + 1;
+          const radius = dot.baseRadius * pulse;
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(dot.x, dot.y, radius, 0, 2 * Math.PI);
+          ctx.fillStyle = dot.color;
+          ctx.shadowColor = "#fff";
+          ctx.shadowBlur = 12;
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+
+      function drawDeathBorder() {
+        ctx.save();
+        ctx.strokeStyle = '#ff0000';
+        ctx.lineWidth = BORDER_WIDTH;
+        ctx.strokeRect(0, 0, WORLD_SIZE, WORLD_SIZE);
+        ctx.restore();
+      }
+
+      function drawScore() {
+        ctx.save();
+        ctx.font = '16px monospace';
+        ctx.fillStyle = '#fff';
+        ctx.fillText(`Score: ${score}`, 20, 30);
+        ctx.fillText(`Highscore: ${highscore}`, 20, 50);
+        if (!alive) {
+          ctx.font = '32px monospace';
+          ctx.fillStyle = '#ff4444';
+          ctx.textAlign = 'center';
+          ctx.fillText('💀 The Serpent Has Fallen 💀', width / 2, height / 2 - 20);
+          ctx.font = '20px monospace';
+          ctx.fillStyle = '#fff';
+          ctx.fillText('Click to restart', width / 2, height / 2 + 20);
+          ctx.textAlign = 'start';
+        }
+        ctx.restore();
+      }
+
+      function drawAISnakes() {
+        for (const ai of aiSnakes) if (ai.alive) drawSnakeRibbon(ai.segments, ai.color, ai.boosting, ai.thickness);
+      }
+
+      function drawMiniMap() {
+        const mapSize = 180, margin = 20, mapX = width - mapSize - margin, mapY = height - mapSize - margin;
+        ctx.save(); ctx.globalAlpha = 0.7; ctx.fillStyle = "#222";
+        ctx.fillRect(mapX, mapY, mapSize, mapSize); ctx.globalAlpha = 1.0;
+        ctx.strokeStyle = "#888"; ctx.lineWidth = 2; ctx.strokeRect(mapX, mapY, mapSize, mapSize);
+        function toMap(x, y) { return { x: mapX + (x / WORLD_SIZE) * mapSize, y: mapY + (y / WORLD_SIZE) * mapSize }; }
+        if (alive && snake.length > 0) {
+          const head = snake[0], pos = toMap(head.x, head.y);
+          ctx.beginPath(); ctx.arc(pos.x, pos.y, 4, 0, 2 * Math.PI); ctx.fillStyle = "#fff"; ctx.fill();
+        }
+        for (const ai of aiSnakes) {
+          if (!ai.alive || ai.segments.length === 0) continue;
+          const head = ai.segments[0], pos = toMap(head.x, head.y);
+          ctx.beginPath(); ctx.arc(pos.x, pos.y, 2, 0, 2 * Math.PI); ctx.fillStyle = ai.color; ctx.fill();
+        }
+        ctx.restore();
+      }
+let lastDotSpawn = 0;
+      function animate(time) {
+        ctx.setTransform(1, 0, 0, 1, width / 2 - snake[0].x, height / 2 - snake[0].y);
+        ctx.clearRect(snake[0].x - width / 2, snake[0].y - height / 2, width, height);
+        if (alive) {
+          updateSnake(time);
+          updateAISnakes(time);
+          checkDotCollision();
+          drawDots(time);
+          drawAISnakes();
+          drawSnakeRibbon(snake, myColor, boosting, thicknessMultiplier);
+        } else {
+          drawAISnakes();
+          drawDots(time);
+        }
+        if (time - lastDotSpawn > 100) {
+          spawnDot();
+          lastDotSpawn = time;
+        }
+        drawDeathBorder();
+        drawScore();
+        drawMiniMap();
+        requestAnimationFrame(animate);
+      }
+      // --- Start the game ---
+      initSnake();
+      animate();
+    });
+  </script>
+</body>
+</html>
